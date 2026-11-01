@@ -1,0 +1,758 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#111317">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<title>VMPuppy</title>
+<style>
+  :root {
+    --page: #111317;
+    --panel: #1d2026;
+    --line: #2c3038;
+    --text: #e8e6e1;
+    --muted: #8b8f98;
+    --accent: #f2a541;
+    --ok: #5fd38a;
+    --bad: #e0675b;
+    --lcd-bg: #a3b39a;
+    --lcd-on: #1c2830;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--page); color: var(--text); overflow: hidden;
+    font: 15px/1.4 ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; overscroll-behavior: none; }
+
+  /* Keep-awake video: full-bleed behind everything, same colour as the page.
+     It has to be genuinely "visible" for browsers to honour it. */
+  #keepawake { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; pointer-events: none; }
+
+  .stage { position: fixed; inset: 0; z-index: 1; display: grid; place-items: center;
+    padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
+             max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
+
+  /* The VMU photo is 281 x 496 px. Positions below are percentages of that. */
+  .vmu { position: relative; aspect-ratio: 281 / 496;
+    width: min(100%, calc((100dvh - 28px) * 281 / 496)); max-height: 100%;
+    background: url("assets/vmu.webp") center / 100% 100% no-repeat;
+    filter: drop-shadow(0 18px 30px #0009); touch-action: none; }
+
+  /* LCD window: (47,152) 186 x 159, inset so the dark frame shows */
+  .glass { position: absolute; left: 19.03%; top: 31.95%; width: 61.59%; height: 29.46%;
+    border-radius: 3% / 4%; overflow: hidden; background: var(--lcd-bg); cursor: pointer;
+    box-shadow: inset 0 2px 6px #0007, inset 0 0 0 1px #0004; transition: background .3s; }
+  .glass::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(155deg, #ffffff22 0%, #ffffff00 40%); }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .idle { position: absolute; inset: 0; display: grid; place-content: center; gap: 6px; text-align: center; padding: 8%;
+    color: var(--lcd-on); font-weight: 650; font-size: clamp(11px, 3.1vw, 16px); line-height: 1.25; transition: opacity .25s; }
+  .idle small { font-weight: 500; opacity: .8; font-size: .85em; }
+  .idle button { justify-self: center; margin-top: 4px; font: inherit; font-size: .9em; color: var(--lcd-bg);
+    background: var(--lcd-on); border: 0; border-radius: 6px; padding: 5px 10px; min-height: 30px; }
+  .idle.hidden { opacity: 0; pointer-events: none; }
+
+  /* Button press feedback, positioned over the photo's buttons */
+  .press { position: absolute; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none;
+    background: radial-gradient(circle, #0000004d 0 55%, #00000000 72%); opacity: 0; transition: opacity 60ms; }
+  .press.on { opacity: 1; transition: none; }
+
+  /* Overlay chrome */
+  .chip { position: fixed; z-index: 3; display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    border-radius: 999px; background: #000a; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    color: var(--text); font: inherit; font-size: 13px; border: 1px solid #ffffff14; transition: opacity .3s; }
+  #status { top: max(12px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); }
+  .topright { position: fixed; z-index: 3; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
+    display: flex; gap: 8px; transition: opacity .3s; }
+  .topright .chip { position: static; cursor: pointer; }
+  #dock { font-weight: 600; min-height: 40px; }
+  #dock svg { width: 16px; height: 16px; }
+  #dock[disabled] { opacity: .5; }
+  #gear { width: 40px; height: 40px; padding: 0; justify-content: center; }
+  #gear svg { width: 20px; height: 20px; }
+  #hint { bottom: max(16px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); white-space: nowrap; }
+  #toast { bottom: max(16px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px);
+    text-align: center; justify-content: center; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.play { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .dot.bad { background: var(--bad); }
+  .hide { opacity: 0 !important; pointer-events: none !important; }
+  body.focus #status, body.focus .topright { opacity: 0; pointer-events: none; }
+
+  /* Settings sheet */
+  .scrim { position: fixed; inset: 0; z-index: 4; background: #0007; opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .sheet { position: fixed; z-index: 5; left: 0; right: 0; bottom: 0; margin: 0 auto; max-width: 480px;
+    background: var(--panel); border: 1px solid var(--line); border-bottom: 0; border-radius: 20px 20px 0 0;
+    padding: 10px 18px max(18px, env(safe-area-inset-bottom)); display: grid; gap: 14px;
+    transform: translateY(105%); transition: transform .25s cubic-bezier(.2,.8,.2,1); max-height: 88dvh; overflow-y: auto; }
+  body.settings .scrim { opacity: 1; pointer-events: auto; }
+  body.settings .sheet { transform: none; }
+  .grab { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 2px; }
+  .row { display: grid; gap: 8px; }
+  .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+  .seg { display: flex; background: var(--page); border: 1px solid var(--line); border-radius: 12px; padding: 3px; gap: 2px; }
+  .seg button { flex: 1; position: relative; }
+  button { font: inherit; color: var(--text); background: transparent; border: 0; border-radius: 9px;
+    padding: 8px 14px; min-height: 40px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: #2d323b; color: #fff; }
+  .seg button .live { position: absolute; top: 7px; right: 9px; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); display: none; }
+  .seg button.connected .live { display: block; }
+  .swatches { display: flex; gap: 10px; flex-wrap: wrap; }
+  .swatch { width: 42px; height: 42px; padding: 0; border-radius: 11px; border: 2px solid transparent; }
+  .swatch[aria-pressed="true"] { border-color: var(--accent); }
+  .toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .toggle { background: var(--page); border: 1px solid var(--line); text-align: left; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .toggle::after { content: ""; width: 34px; height: 20px; border-radius: 10px; flex: none; transition: background .15s;
+    background: radial-gradient(circle 7px at 10px 50%, #8b8f98 96%, transparent 100%), var(--line); }
+  .toggle[aria-pressed="true"]::after {
+    background: radial-gradient(circle 7px at 24px 50%, #fff 96%, transparent 100%), var(--accent); }
+  .note { color: var(--muted); font-size: 12px; margin: -4px 0 0; }
+  .help { color: var(--muted); font-size: 12.5px; margin: 0; }
+</style>
+</head>
+<body>
+  <video id="keepawake" src="assets/keepawake.mp4" muted playsinline loop preload="auto" disableremoteplayback aria-hidden="true"></video>
+
+  <main class="stage">
+    <div class="vmu" id="vmu" role="application" aria-label="Dreamcast VMU">
+      <div class="glass" id="glass" title="Tap for full screen">
+        <canvas id="lcd"></canvas>
+        <div class="idle" id="idle"></div>
+      </div>
+    </div>
+  </main>
+
+  <div class="chip" id="status"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span></div>
+  <div class="topright">
+    <button class="chip" id="dock" disabled>
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 17h14v2H5zm7-12 7 9H5z"/></svg><span id="dockText">Eject</span>
+    </button>
+    <button class="chip" id="gear" aria-label="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
+  </div>
+  <div class="chip hide" id="hint">Tap anywhere to keep the screen on</div>
+  <div class="chip hide" id="toast"></div>
+
+  <div class="scrim" id="scrim"></div>
+  <section class="sheet" id="sheet" aria-label="Settings">
+    <div class="grab"></div>
+    <div class="row">
+      <span class="label">Controller port</span>
+      <div class="seg" id="ports"></div>
+    </div>
+    <div class="row">
+      <span class="label">Screen colour</span>
+      <div class="swatches" id="themes"></div>
+    </div>
+    <div class="row">
+      <span class="label">Options</span>
+      <div class="toggles">
+        <button class="toggle" id="awake">Keep screen on</button>
+        <button class="toggle" id="sound">Sound</button>
+        <button class="toggle" id="ghost">Ghosting</button>
+        <button class="toggle" id="rotate">Rotate 180°</button>
+        <button class="toggle" id="haptics">Vibrate on press</button>
+      </div>
+      <p class="note" id="awakeNote"></p>
+    </div>
+    <p class="help">Eject the VMU to play its games; dock it to hand your saves back to the game. Holding SLEEP for a second does the same, like DreamPotato.</p>
+  </section>
+
+<script src="vmu-core.js"></script>
+<script>
+(() => {
+  const W = 48, H = 32, N = W * H;
+  const PORTS = "ABCD";
+
+  const THEMES = {
+    classic: { bg: "#a3b39a", on: "#1c2830", name: "Classic" },
+    blue:    { bg: "#5aa9ff", on: "#0a1b33", name: "Blue backlight" },
+    white:   { bg: "#e6e9e2", on: "#202325", name: "White" },
+    amber:   { bg: "#1b1206", on: "#ffb43a", name: "Amber" },
+    green:   { bg: "#07140c", on: "#46f07c", name: "Phosphor" },
+  };
+
+  
+  const store = {
+    get(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+    del(k) { try { localStorage.removeItem(k); } catch {} },
+  };
+  const prefs = { theme: "classic", ghost: true, rotate: false, sound: false, awake: true, haptics: true, bus: null };
+  try { Object.assign(prefs, JSON.parse(store.get("vmu-prefs", "{}"))); } catch {}
+  prefs.sound = false;                                   
+  const save = () => store.set("vmu-prefs", JSON.stringify(prefs));
+  let clientId = store.get("vmu-client");
+  if (!clientId) { clientId = Math.random().toString(36).slice(2, 10); store.set("vmu-client", clientId); }
+
+
+  const frames = Array.from({ length: 4 }, () => new Uint8Array(192));   
+  const connected = [false, false, false, false];
+  const vmuInfo = Array.from({ length: 4 }, () => ({ docked: true, owner: null }));
+  const beepHz = [0, 0, 0, 0];
+  const ioFlash = [0, 0, 0, 0];               
+  let biosOnBridge = null;                    
+  let bus = prefs.bus ?? 0;
+  let userPickedBus = prefs.bus !== null;
+  let bridgeUp = false;
+  let busy = false;
+
+  const $ = id => document.getElementById(id);
+  const canvas = $("lcd"), ctx = canvas.getContext("2d");
+  const idle = $("idle");
+
+
+  const emus = [null, null, null, null];      
+  let biosBytes = null;
+
+  async function loadBios() {
+    if (biosBytes) return biosBytes;
+    const r = await fetch("bios", { cache: "no-store" });
+    if (!r.ok) return null;
+    const b = new Uint8Array(await r.arrayBuffer());
+    if (b.length !== 65536) return null;
+    return biosBytes = b;
+  }
+
+  function makeEmu(b, bios) {
+    const core = new VmuEmu.VmuCore();
+    core.rom.set(bios);
+    core.reset();
+    core.initializeDate(new Date());
+    const e = { core, running: false, dirtyBlocks: new Set(), uploadTimer: 0, bus: b };
+    core.onFlashWrite = a => {
+      e.dirtyBlocks.add(a >> 9);
+      clearTimeout(e.uploadTimer);
+      e.uploadTimer = setTimeout(() => flushBlocks(e), 1200);
+    };
+    core.onSample = onSample;
+    return e;
+  }
+
+  async function flushBlocks(e, keepalive = false) {
+    clearTimeout(e.uploadTimer);
+    if (!e.dirtyBlocks.size || !e.running) return;
+    const blocks = [...e.dirtyBlocks]; e.dirtyBlocks.clear();
+    const body = new Uint8Array(blocks.length * 513);
+    blocks.forEach((blk, i) => { body[i * 513] = blk; body.set(e.core.flash.subarray(blk * 512, blk * 512 + 512), i * 513 + 1); });
+    try {
+      const r = await fetch(`vmu/${PORTS[e.bus]}/blocks?client=${clientId}`, { method: "POST", body, keepalive });
+      if (!r.ok && r.status !== 409) blocks.forEach(x => e.dirtyBlocks.add(x));
+    } catch { blocks.forEach(x => e.dirtyBlocks.add(x)); e.uploadTimer = setTimeout(() => flushBlocks(e), 3000); }
+  }
+
+  function saveCpuState(e) {
+    if (!e || !e.running) return;
+    store.set(`vmu-cpu-${e.bus}`, JSON.stringify({ t: Date.now(), s: e.core.saveState() }));
+  }
+
+  async function eject() {
+    if (busy) return;
+    busy = true; syncUi();
+    try {
+      const bios = await loadBios();
+      if (!bios) { toast("Add the VMU BIOS file (american_v1.05.bin) next to vmu_bridge.py, then try again."); return; }
+      const r = await fetch(`vmu/${PORTS[bus]}/eject?client=${clientId}`, { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      const flash = new Uint8Array(await r.arrayBuffer());
+      let e = emus[bus];
+      if (!e) {
+        e = emus[bus] = makeEmu(bus, bios);
+        e.core.connectDreamcast(true);           // power on in the controller, like DreamPotato
+      }
+      e.core.flash.set(flash);
+      e.core.connectDreamcast(false);
+      e.running = true;
+      vmuInfo[bus] = { docked: false, owner: clientId };
+      buzz(15);
+    } catch (err) {
+      toast("Couldn't eject: " + (err.message || err));
+    } finally { busy = false; syncUi(); }
+  }
+
+  let resuming = false;
+  async function resume(b) {
+    if (resuming || busy) return;
+    resuming = true;
+    try { await resumeInner(b); } catch (err) { toast("Couldn't start the VMU: " + (err.message || err)); }
+    finally { resuming = false; syncUi(); }
+  }
+  async function resumeInner(b) {
+    const bios = await loadBios();
+    if (!bios) { toast("VMU BIOS missing on the bridge."); return; }
+    const r = await fetch(`vmu/${PORTS[b]}/eject?client=${clientId}`, { method: "POST" });
+    if (!r.ok) return;
+    const flash = new Uint8Array(await r.arrayBuffer());
+    let e = emus[b];
+    if (!e) {
+      e = emus[b] = makeEmu(b, bios);
+      let restored = false;
+      try {
+        const saved = JSON.parse(store.get(`vmu-cpu-${b}`, "null"));
+        if (saved && Date.now() - saved.t < 7 * 864e5) { e.core.loadState(saved.s); restored = !e.core.docked; }
+      } catch {}
+      if (!restored) { e.core.reset(); e.core.initializeDate(new Date()); e.core.connectDreamcast(true); e.core.connectDreamcast(false); }
+    }
+    e.core.flash.set(flash);
+    e.running = true;
+    vmuInfo[b] = { docked: false, owner: clientId };
+    syncUi();
+  }
+
+  async function dock() {
+    const e = emus[bus];
+    if (busy || !e) return;
+    busy = true; syncUi();
+    try {
+      clearTimeout(e.uploadTimer); e.dirtyBlocks.clear();
+      saveCpuState(e);
+      e.running = false;
+      e.core.connectDreamcast(true);            
+      const r = await fetch(`vmu/${PORTS[bus]}/dock?client=${clientId}`, { method: "POST", body: e.core.flash });
+      if (r.status === 409) toast("Another device had taken this VMU; your latest changes stayed on it.");
+      else if (!r.ok) throw new Error(await r.text());
+      store.del(`vmu-cpu-${bus}`);
+      vmuInfo[bus] = { docked: true, owner: null };
+      silence(); buzz(15);
+    } catch (err) {
+      toast("Couldn't dock: " + (err.message || err));
+      e.core.connectDreamcast(false); e.running = true;
+    } finally { busy = false; syncUi(); }
+  }
+
+  const toggleDock = () => (vmuInfo[bus].docked ? eject() : (isMine(bus) ? dock() : resume(bus)));
+  const isMine = b => !vmuInfo[b].docked && vmuInfo[b].owner === clientId;
+
+
+  function onVmuInfo(b, info) {
+    vmuInfo[b] = info;
+    if (busy || resuming) { syncUi(); return; }
+    const e = emus[b];
+    if (info.docked) {
+      if (e && !e.core.docked) { e.running = false; e.core.connectDreamcast(true); }
+    } else if (info.owner === clientId) {
+      if (!e || !e.running) resume(b);
+    } else if (e && e.running) {
+      e.running = false;                         // someone else took it over
+      saveCpuState(e); store.del(`vmu-cpu-${b}`);
+      if (b === bus) toast("Your VMU is now being played on another device.");
+    }
+    if (b === bus) silence();
+    syncUi();
+  }
+
+
+  const target = new Float32Array(N), shown = new Float32Array(N);
+  const emuScreen = new Uint8Array(192);
+  let icons = { file: false, game: false, clock: false, flash: false };
+  let dirty = true;
+  let lastSig = "";
+
+ 
+  function decodeInto(src, controllerView) {
+    const flip = controllerView !== prefs.rotate;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      target[y * W + x] = flip
+        ? (src[6 * (31 - y) + 5 - (x >> 3)] >> (x & 7)) & 1
+        : (src[6 * y + (x >> 3)] >> (7 - (x & 7))) & 1;
+    }
+    if (!prefs.ghost) shown.set(target);
+    dirty = true;
+  }
+
+  function refreshTarget() {
+    const e = emus[bus];
+    if (e && e.running) {
+      e.core.getDisplay(emuScreen);
+      const ic = e.core.getIcons();
+      const sig = emuScreen.join(",") + JSON.stringify(ic) + prefs.rotate;
+      if (sig !== lastSig) { lastSig = sig; icons = ic; decodeInto(emuScreen, false); }
+    } else if (vmuInfo[bus].docked) {
+      const fl = performance.now() - ioFlash[bus] < 400;
+      if (fl !== icons.flash) { icons = { file: false, game: false, clock: false, flash: fl }; dirty = true; }
+    } else {
+      if (lastSig !== "blank") { lastSig = "blank"; icons = { file: false, game: false, clock: false, flash: false }; decodeInto(new Uint8Array(192), false); }
+    }
+  }
+
+  // tiny LCD icons (FILE, GAME, CLOCK, FLASH), 1 = pixel
+  const ICONS = {
+    file:  ["0111110", "0100011", "0100001", "0100001", "0100001", "0100001", "0111111"],
+    game:  ["0011100", "0111110", "1101011", "1111111", "1101011", "1111111", "0110110"],
+    clock: ["0011100", "0100010", "1001001", "1001101", "1000001", "0100010", "0011100"],
+    flash: ["0000110", "0001100", "0011000", "0111110", "0001100", "0011000", "0110000"],
+  };
+
+  let cell = 0, gap = 0, ox = 0, oy = 0, icell = 0, iy = 0, colors = null;
+  const hexToRgb = h => { const n = parseInt(h.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
+  function buildColors() {
+    const t = THEMES[prefs.theme] || THEMES.classic;
+    document.documentElement.style.setProperty("--lcd-bg", t.bg);
+    document.documentElement.style.setProperty("--lcd-on", t.on);
+    const bg = hexToRgb(t.bg), on = hexToRgb(t.on);
+    const off = bg.map((c, i) => Math.round(c + (on[i] - c) * 0.07));
+    colors = Array.from({ length: 33 }, (_, k) =>
+      `rgb(${off.map((c, i) => Math.round(c + (on[i] - c) * k / 32)).join(",")})`);
+    dirty = true;
+  }
+  function resize() {
+    const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
+    const cw = canvas.width, ch = canvas.height;
+    cell = Math.max(1, Math.floor(Math.min(cw * 0.92 / W, ch * 0.74 / H)));
+    gap = cell >= 6 ? Math.max(1, Math.round(cell * 0.1)) : 0;
+    ox = Math.round((cw - cell * W) / 2);
+    oy = Math.round(ch * 0.07);
+    icell = Math.max(1, Math.floor(cell * 0.62));
+    const stripTop = oy + cell * H, stripH = ch - stripTop;
+    iy = Math.round(stripTop + (stripH - icell * 7) / 2);
+    dirty = true;
+  }
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const s = cell - gap, buckets = Array.from({ length: 33 }, () => []);
+    for (let i = 0; i < N; i++) buckets[Math.round(shown[i] * 32)].push(i);
+    for (let k = 0; k < 33; k++) {
+      if (!buckets[k].length) continue;
+      ctx.fillStyle = colors[k];
+      for (const i of buckets[k]) ctx.fillRect(ox + (i % W) * cell, oy + ((i / W) | 0) * cell, s, s);
+    }
+    // icon strip
+    const names = ["file", "game", "clock", "flash"];
+    const span = cell * W, step = span / 4;
+    const ig = icell >= 5 ? 1 : 0;
+    names.forEach((n, j) => {
+      const x0 = Math.round(ox + step * j + (step - icell * 7) / 2);
+      ctx.fillStyle = icons[n] ? colors[32] : colors[2];
+      ICONS[n].forEach((row, yy) => { for (let xx = 0; xx < 7; xx++) if (row[xx] === "1") ctx.fillRect(x0 + xx * icell, iy + yy * icell, icell - ig, icell - ig); });
+    });
+  }
+
+
+  const BTN = {
+    dpad: { x: 70, y: 392, r: 48 },
+    sleep: { x: 152, y: 366, r: 16 }, mode: { x: 197, y: 366, r: 16 },
+    a: { x: 173, y: 414, r: 24 }, b: { x: 234, y: 402, r: 24 },
+  };
+  const vmuEl = $("vmu");
+  const pointers = new Map();                 // pointerId -> Set of button names
+  const keys = new Set();
+  const pressed = { up: false, down: false, left: false, right: false, a: false, b: false, mode: false, sleep: false };
+
+  // visual press markers
+  const markers = {};
+  for (const [name, p] of Object.entries(BTN)) {
+    if (name === "dpad") continue;
+    const m = document.createElement("div");
+    m.className = "press";
+    Object.assign(m.style, { left: p.x / 2.81 + "%", top: p.y / 4.96 + "%", width: (p.r * 1.6) / 2.81 + "%", aspectRatio: 1 });
+    vmuEl.append(m); markers[name] = m;
+  }
+  for (const [dir, dx, dy] of [["up", 0, -1], ["down", 0, 1], ["left", -1, 0], ["right", 1, 0]]) {
+    const m = document.createElement("div");
+    m.className = "press";
+    Object.assign(m.style, { left: (BTN.dpad.x + dx * 24) / 2.81 + "%", top: (BTN.dpad.y + dy * 24) / 4.96 + "%", width: 30 / 2.81 + "%", aspectRatio: 1 });
+    vmuEl.append(m); markers[dir] = m;
+  }
+
+  function hitTest(clientX, clientY) {
+    const r = vmuEl.getBoundingClientRect();
+    const x = (clientX - r.left) / r.width * 281, y = (clientY - r.top) / r.height * 496;
+    const out = new Set();
+    const d = BTN.dpad, ddx = x - d.x, ddy = y - d.y, dist = Math.hypot(ddx, ddy);
+    if (dist <= d.r && dist > 5) {
+      const ang = Math.atan2(ddy, ddx) * 180 / Math.PI;              // 0 = right, 90 = down
+      const near = (a, c) => Math.abs(((a - c + 540) % 360) - 180) <= 67.5;
+      if (near(ang, 0)) out.add("right"); if (near(ang, 180)) out.add("left");
+      if (near(ang, 90)) out.add("down"); if (near(ang, -90)) out.add("up");
+      return out;
+    }
+    let best = null, bestD = Infinity;
+    for (const n of ["a", "b", "sleep", "mode"]) {
+      const p = BTN[n], dd = Math.hypot(x - p.x, y - p.y);
+      if (dd <= p.r && dd < bestD) { best = n; bestD = dd; }
+    }
+    if (best) out.add(best);
+    return out;
+  }
+
+  function recomputePressed() {
+    const before = JSON.stringify(pressed);
+    for (const k of Object.keys(pressed)) pressed[k] = keys.has(k);
+    for (const set of pointers.values()) for (const k of set) pressed[k] = true;
+    for (const [k, m] of Object.entries(markers)) m.classList.toggle("on", pressed[k]);
+    return JSON.stringify(pressed) !== before;
+  }
+
+  vmuEl.addEventListener("pointerdown", ev => {
+    const hits = hitTest(ev.clientX, ev.clientY);
+    if (!hits.size) return;
+    ev.preventDefault();
+    try { vmuEl.setPointerCapture(ev.pointerId); } catch {}
+    pointers.set(ev.pointerId, hits);
+    buzz(8);
+    recomputePressed();
+  });
+  vmuEl.addEventListener("pointermove", ev => {
+    if (!pointers.has(ev.pointerId)) return;
+    const old = pointers.get(ev.pointerId), hits = hitTest(ev.clientX, ev.clientY);
+
+    if ([...hits].join() !== [...old].join()) {
+      if ([...hits].some(h => !old.has(h))) buzz(6);
+      pointers.set(ev.pointerId, hits); recomputePressed();
+    }
+  });
+  const release = ev => { if (pointers.delete(ev.pointerId)) recomputePressed(); };
+  vmuEl.addEventListener("pointerup", release);
+  vmuEl.addEventListener("pointercancel", release);
+  vmuEl.addEventListener("contextmenu", ev => ev.preventDefault());
+
+  const KEYMAP = { ArrowUp: "up", KeyW: "up", ArrowDown: "down", KeyS: "down", ArrowLeft: "left", KeyA: "left",
+    ArrowRight: "right", KeyD: "right", KeyK: "a", KeyL: "b", KeyI: "mode", KeyJ: "sleep", KeyZ: "a", KeyX: "b" };
+  addEventListener("keydown", ev => {
+    if (ev.code === "Insert") { toggleDock(); return; }
+    const k = KEYMAP[ev.code]; if (!k) return;
+    ev.preventDefault(); keys.add(k); recomputePressed();
+  });
+  addEventListener("keyup", ev => { const k = KEYMAP[ev.code]; if (k) { keys.delete(k); recomputePressed(); } });
+  addEventListener("blur", () => { keys.clear(); pointers.clear(); recomputePressed(); });
+
+  function buzz(ms) { if (prefs.haptics && navigator.vibrate) try { navigator.vibrate(ms); } catch {} }
+
+
+  let audio = null, osc = null, oscGain = null, pcmGain = null, nextPcmTime = 0;
+  let pcm = [], pcmFrac = 0, pcmSum = 0, sampleRate = 44100;
+  function ensureAudio() {
+    if (audio) return;
+    audio = new (window.AudioContext || window.webkitAudioContext)();
+    sampleRate = audio.sampleRate;
+    oscGain = audio.createGain(); oscGain.gain.value = 0; oscGain.connect(audio.destination);
+    osc = audio.createOscillator(); osc.type = "square"; osc.connect(oscGain); osc.start();
+    pcmGain = audio.createGain(); pcmGain.gain.value = 0.12; pcmGain.connect(audio.destination);
+  }
+  
+  function onSample(sign, tickHz) {
+    if (!prefs.sound || !audio) return;
+    let rem = sampleRate / tickHz;
+    while (rem > 0) {
+      const take = Math.min(rem, 1 - pcmFrac);
+      pcmSum += sign * take; pcmFrac += take; rem -= take;
+      if (pcmFrac >= 0.999999) { pcm.push(pcmSum); pcmSum = 0; pcmFrac = 0; }
+    }
+  }
+  function flushPcm() {
+    if (!audio || !pcm.length) { pcm.length = 0; return; }
+    if (pcm.every(v => v === 0)) { pcm.length = 0; return; }
+    const buf = audio.createBuffer(1, pcm.length, sampleRate);
+    buf.getChannelData(0).set(pcm);
+    pcm.length = 0;
+    const now = audio.currentTime;
+    if (nextPcmTime < now + 0.03 || nextPcmTime > now + 0.25) nextPcmTime = now + 0.05;
+    const src = audio.createBufferSource(); src.buffer = buf; src.connect(pcmGain); src.start(nextPcmTime);
+    nextPcmTime += buf.duration;
+  }
+  function applyBeep() {
+    if (!audio) return;
+    const hz = prefs.sound && connected[bus] && vmuInfo[bus].docked ? beepHz[bus] : 0, t = audio.currentTime;
+    if (hz > 0) { osc.frequency.setValueAtTime(Math.min(hz, 20000), t); oscGain.gain.setTargetAtTime(0.06, t, 0.002); }
+    else oscGain.gain.setTargetAtTime(0, t, 0.004);
+  }
+  function silence() { pcm.length = 0; pcmSum = 0; pcmFrac = 0; applyBeep(); }
+
+
+  let last = performance.now();
+  let sleepHeld = 0;                          
+  function frame(now) {
+    const dt = Math.min(100, now - last); last = now;
+
+    if (pressed.sleep) {
+      if (sleepHeld >= 0) { sleepHeld += dt; if (sleepHeld >= 1000) { sleepHeld = -1; toggleDock(); } }
+    } else sleepHeld = 0;
+
+    const e = emus[bus];
+    if (e && e.running && !busy) {
+      e.core.setButtons(pressed);
+      e.core.run(dt * 10000);
+      flushPcm();
+    }
+    refreshTarget();
+
+    if (prefs.ghost) {
+      const kOn = 1 - Math.exp(-dt / 22), kOff = 1 - Math.exp(-dt / 70);
+      for (let i = 0; i < N; i++) {
+        const d = target[i] - shown[i];
+        if (d > 0.004 || d < -0.004) { shown[i] += d * (d > 0 ? kOn : kOff); dirty = true; }
+        else if (d !== 0) { shown[i] = target[i]; dirty = true; }
+      }
+    }
+    if (dirty) { draw(); dirty = false; }
+    requestAnimationFrame(frame);
+  }
+
+  const video = $("keepawake");
+  let wakeLock = null, awakeMode = "off";
+  const nativeOk = "wakeLock" in navigator && window.isSecureContext;
+  async function startAwake() {
+    if (!prefs.awake) return;
+    if (nativeOk) {
+      try {
+        if (!wakeLock) {
+          wakeLock = await navigator.wakeLock.request("screen");
+          wakeLock.addEventListener("release", () => { wakeLock = null; if (awakeMode === "native") setAwakeMode("pending"); });
+        }
+        return setAwakeMode("native");
+      } catch {}
+    }
+    try { await video.play(); setAwakeMode("video"); } catch { setAwakeMode("pending"); }
+  }
+  function stopAwake() { if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; } video.pause(); setAwakeMode("off"); }
+  function setAwakeMode(m) { awakeMode = m; syncUi(); }
+  const kick = () => {
+    if (prefs.awake && (awakeMode === "pending" || awakeMode === "off" || (awakeMode === "video" && video.paused))) startAwake();
+    if (prefs.sound && audio && audio.state !== "running") audio.resume();
+  };
+  document.addEventListener("pointerdown", kick, true);
+  document.addEventListener("touchend", kick, true);
+  video.addEventListener("pause", () => { if (prefs.awake && awakeMode === "video" && !document.hidden) setAwakeMode("pending"); });
+  video.addEventListener("playing", () => { if (prefs.awake && awakeMode !== "native") setAwakeMode("video"); });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") { if (prefs.awake) startAwake(); last = performance.now(); }
+    else { emus.forEach(e => { if (e && e.running) { saveCpuState(e); flushBlocks(e, true); } }); }
+  });
+  addEventListener("pagehide", () => emus.forEach(e => { if (e && e.running) { saveCpuState(e); flushBlocks(e, true); } }));
+
+  const portBtns = [...Array(4)].map((_, i) => {
+    const b = document.createElement("button");
+    b.innerHTML = `${PORTS[i]}<span class="live"></span>`;
+    b.setAttribute("aria-label", `Controller port ${PORTS[i]}`);
+    b.onclick = () => { userPickedBus = true; prefs.bus = i; save(); selectBus(i); };
+    $("ports").append(b);
+    return b;
+  });
+  for (const [key, t] of Object.entries(THEMES)) {
+    const b = document.createElement("button");
+    b.className = "swatch"; b.title = t.name; b.setAttribute("aria-label", t.name);
+    b.style.background = `linear-gradient(135deg, ${t.bg} 55%, ${t.on} 55%)`;
+    b.dataset.theme = key;
+    b.onclick = () => { prefs.theme = key; save(); buildColors(); syncUi(); };
+    $("themes").append(b);
+  }
+  const redecode = () => { lastSig = ""; if (vmuInfo[bus].docked) decodeInto(frames[bus], true); refreshTarget(); if (prefs.ghost) shown.set(target); };
+  $("ghost").onclick = () => { prefs.ghost = !prefs.ghost; save(); if (!prefs.ghost) shown.set(target); dirty = true; syncUi(); };
+  $("rotate").onclick = () => { prefs.rotate = !prefs.rotate; save(); redecode(); syncUi(); };
+  $("haptics").onclick = () => { prefs.haptics = !prefs.haptics; save(); buzz(10); syncUi(); };
+  $("sound").onclick = () => {
+    prefs.sound = !prefs.sound;
+    if (prefs.sound) { ensureAudio(); audio.resume(); }
+    silence(); syncUi();
+  };
+  $("awake").onclick = () => { prefs.awake = !prefs.awake; save(); prefs.awake ? startAwake() : stopAwake(); };
+  $("dock").onclick = () => toggleDock();
+  const openSettings = open => document.body.classList.toggle("settings", open);
+  $("gear").onclick = () => openSettings(true);
+  $("scrim").onclick = () => openSettings(false);
+
+  function selectBus(i) {
+    const prev = emus[bus]; if (prev && prev.running) { saveCpuState(prev); flushBlocks(prev); }
+    bus = i; lastSig = "";
+    if (vmuInfo[bus].docked) decodeInto(frames[bus], true);
+    refreshTarget(); if (prefs.ghost) shown.set(target);
+    silence(); syncUi();
+  }
+
+  let toastTimer = 0;
+  function toast(msg) {
+    const t = $("toast"); t.textContent = msg; t.classList.remove("hide");
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add("hide"), 4500);
+  }
+
+  function syncUi() {
+    portBtns.forEach((b, i) => { b.setAttribute("aria-pressed", i === bus); b.classList.toggle("connected", connected[i] || isMine(i)); });
+    document.querySelectorAll(".swatch").forEach(b => b.setAttribute("aria-pressed", b.dataset.theme === prefs.theme));
+    for (const k of ["ghost", "rotate", "sound", "awake", "haptics"]) $(k).setAttribute("aria-pressed", prefs[k]);
+
+    $("awakeNote").textContent = !prefs.awake ? "Your phone will dim and lock as usual."
+      : awakeMode === "native" ? "Screen will stay on (system wake lock)."
+      : awakeMode === "video" ? "Screen will stay on while this page is open."
+      : "Tap anywhere on the page to activate.";
+    $("hint").classList.toggle("hide", !(prefs.awake && awakeMode === "pending") || !$("toast").classList.contains("hide"));
+
+    const info = vmuInfo[bus], mine = isMine(bus), L = PORTS[bus];
+    const dot = $("dot"), txt = $("statusText");
+    dot.className = "dot";
+    if (!bridgeUp) { dot.classList.add("bad"); txt.textContent = "Bridge offline"; }
+    else if (mine) { dot.classList.add("play"); txt.textContent = `${L} · Ejected`; }
+    else if (!info.docked) { txt.textContent = `${L} · In use elsewhere`; }
+    else if (connected[bus]) { dot.classList.add("ok"); txt.textContent = `${L} · Docked`; }
+    else txt.textContent = `${L} · Docked, no game`;
+
+    const dockBtn = $("dock");
+    dockBtn.disabled = !bridgeUp || busy;
+    $("dockText").textContent = busy ? "…" : info.docked ? "Eject" : mine ? "Dock" : "Use here";
+    dockBtn.querySelector("svg").style.transform = !info.docked && mine ? "rotate(180deg)" : "";
+
+    let msg = "";
+    if (!bridgeUp) msg = "Can't reach the bridge<small>Is vmu_bridge.py running?</small>";
+    else if (!info.docked && !mine) msg = `VMU ${L} is being played on another device<button id="takeover">Use it here</button>`;
+    else if (info.docked && !connected[bus]) msg = `Docked · waiting for Flycast<small>Tap Eject to play VMU games</small>`;
+    idle.innerHTML = msg;
+    idle.classList.toggle("hidden", !msg);
+    const tk = $("takeover"); if (tk) tk.onclick = ev => { ev.stopPropagation(); resume(bus); };
+  }
+
+  $("glass").onclick = async ev => {
+    if (ev.target.closest("button")) return;
+    const el = document.documentElement;
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else if (document.body.classList.contains("focus")) {
+      document.body.classList.remove("focus");
+    } else if (el.requestFullscreen || el.webkitRequestFullscreen) {
+      try { await (el.requestFullscreen || el.webkitRequestFullscreen).call(el, { navigationUI: "hide" }); }
+      catch { document.body.classList.add("focus"); }
+    } else document.body.classList.add("focus");
+  };
+  const onFs = () => document.body.classList.toggle("focus", !!(document.fullscreenElement || document.webkitFullscreenElement));
+  document.addEventListener("fullscreenchange", onFs);
+  document.addEventListener("webkitfullscreenchange", onFs);
+
+  const b64ToBytes = s => { const bin = atob(s), out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
+  function connect() {
+    const es = new EventSource("events");
+    es.onopen = () => { bridgeUp = true; syncUi(); };
+    es.onerror = () => { bridgeUp = false; connected.fill(false); syncUi(); };
+    es.onmessage = ev => {
+      const m = JSON.parse(ev.data);
+      if (m.t === "frame") {
+        frames[m.bus] = b64ToBytes(m.d);
+        if (m.bus === bus && vmuInfo[bus].docked) decodeInto(frames[m.bus], true);
+      } else if (m.t === "status") {
+        connected[m.bus] = m.connected;
+        if (!userPickedBus && m.connected && !connected[bus] && !isMine(bus)) selectBus(m.bus);
+        if (!m.connected) beepHz[m.bus] = 0;
+        applyBeep(); syncUi();
+      } else if (m.t === "vmu") {
+        onVmuInfo(m.bus, { docked: m.docked, owner: m.owner });
+      } else if (m.t === "beep") {
+        beepHz[m.bus] = m.hz; if (m.bus === bus) applyBeep();
+      } else if (m.t === "io") {
+        ioFlash[m.bus] = performance.now();
+      } else if (m.t === "hello") {
+        biosOnBridge = m.bios;
+      }
+    };
+  }
+
+  new ResizeObserver(resize).observe(canvas);
+  buildColors(); resize(); decodeInto(frames[bus], true); syncUi(); connect();
+  startAwake();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
